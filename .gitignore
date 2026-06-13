@@ -1,0 +1,9 @@
+# Ignore all files by default to prevent official extension files from being committed
+*
+
+# Allow the specific files we want to track in git
+!accessibility-patch.js
+!auto-patcher.js
+!README.md
+!LICENSE
+!.gitignore
