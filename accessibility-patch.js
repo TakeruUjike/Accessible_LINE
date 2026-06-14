@@ -354,10 +354,35 @@
 
         // 6. GNB (Global Navigation Bar) icons/tabs on the left (e.g. Chats, Friends) - Hash-independent
         try {
-            const gnbItems = document.querySelectorAll(
+            const rawGnbItems = Array.from(document.querySelectorAll(
                 '[class*="gnb"] button, [class*="gnb"] a, [class*="gnb"] li, [class*="gnb"] [class*="button"], [class*="gnb-module__nav_list_item"]'
-            );
-            gnbItems.forEach(item => {
+            ));
+            
+            // 重複を排除：子孫に他のGNB候補要素を持つ要素（親コンテナ）は除外する
+            const activeGnbItems = [];
+            const containerGnbItems = [];
+            
+            rawGnbItems.forEach(item => {
+                const hasChildCandidate = rawGnbItems.some(otherItem => {
+                    return otherItem !== item && item.contains(otherItem);
+                });
+                if (hasChildCandidate) {
+                    containerGnbItems.push(item);
+                } else {
+                    activeGnbItems.push(item);
+                }
+            });
+
+            // 親コンテナからは、過去のパッチや標準で付与された不要なアクセシビリティ属性をクリアする
+            containerGnbItems.forEach(container => {
+                container.removeAttribute('role');
+                container.removeAttribute('tabindex');
+                container.removeAttribute('aria-label');
+                container.removeAttribute('aria-selected');
+                container.removeAttribute('aria-pressed');
+            });
+
+            activeGnbItems.forEach(item => {
                 let label = item.getAttribute('aria-label') || item.title || item.textContent.trim();
                 if (!label) {
                     const classStr = getSafeClassName(item).toLowerCase();
@@ -368,7 +393,15 @@
                     else if (classStr.includes('setting')) label = '設定';
                     else label = 'メニュー項目';
                 }
-                makeInteractive(item, 'tab', label);
+                
+                // roleを強制的に'button'にして、NVDAブラウズモードでの上下矢印アクセスを保証する
+                item.setAttribute('role', 'button');
+                makeInteractive(item, 'button', label);
+
+                // トグル状態（aria-pressed）や選択状態（aria-selected）は
+                // 画面切り替えの通常のボタンとして扱うため、不要な属性をクリアして普通のボタンに戻す
+                item.removeAttribute('aria-pressed');
+                item.removeAttribute('aria-selected');
             });
         } catch (e) { console.error("Patch Error (GNB):", e); }
 
