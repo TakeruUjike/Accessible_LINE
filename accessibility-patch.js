@@ -314,18 +314,16 @@
             console.log("Applied H1 heading to chatroom title: " + chatHeader.textContent);
         }
 
-        // 8. Message list container (role="list") and message items (role="listitem")
+        // 8. Remove list/listitem roles to prevent screen reader repeating the date header for each message
         const messageList = document.querySelector('.message_list');
-        if (messageList && messageList.getAttribute('role') !== 'list') {
-            messageList.setAttribute('role', 'list');
+        if (messageList) {
+            messageList.removeAttribute('role');
         }
         
         const messages = document.querySelectorAll('.message_list [data-message-id]');
         messages.forEach(msg => {
-            if (msg.getAttribute('role') !== 'listitem') {
-                msg.setAttribute('role', 'listitem');
-                msg.removeAttribute('aria-level'); // Remove any previous heading level to clean up WAI-ARIA
-            }
+            msg.removeAttribute('role');
+            msg.removeAttribute('aria-level');
         });
 
         // 9. Input textarea accessibility label
