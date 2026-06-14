@@ -17,6 +17,34 @@
     `;
     document.head.appendChild(style);
 
+    // 1. Announcer region for Screen Readers (Live Region)
+    let announcer = document.getElementById('sr-announcer');
+    if (!announcer) {
+        announcer = document.createElement('div');
+        announcer.id = 'sr-announcer';
+        announcer.setAttribute('aria-live', 'polite');
+        announcer.setAttribute('aria-atomic', 'true');
+        // Visually hidden styles (sr-only)
+        announcer.style.position = 'absolute';
+        announcer.style.width = '1px';
+        announcer.style.height = '1px';
+        announcer.style.padding = '0';
+        announcer.style.margin = '-1px';
+        announcer.style.overflow = 'hidden';
+        announcer.style.clip = 'rect(0, 0, 0, 0)';
+        announcer.style.border = '0';
+        document.body.appendChild(announcer);
+    }
+
+    function announce(message) {
+        if (announcer) {
+            announcer.textContent = '';
+            setTimeout(() => {
+                announcer.textContent = message;
+            }, 100);
+        }
+    }
+
     // Simulate both mouse events and click to trigger React state transitions correctly
     function simulateClick(el) {
         const opts = { bubbles: true, cancelable: true, view: window };
@@ -44,8 +72,8 @@
             el.setAttribute('role', role);
         }
 
-        // Add aria-label if specified and not present
-        if (label && !el.hasAttribute('aria-label') && !el.hasAttribute('aria-labelledby')) {
+        // Add aria-label if specified (always overwrite to replace poor defaults like "go chat room")
+        if (label) {
             el.setAttribute('aria-label', label);
         }
 
@@ -61,6 +89,117 @@
         }
     }
 
+    // Modal trap logic
+    let activeModal = null;
+    let modalFocusElements = [];
+
+    function checkModalRoot() {
+        const modalRoot = document.getElementById('modal-root');
+        if (!modalRoot) return;
+
+        const modal = modalRoot.firstElementChild;
+        if (modal && modal !== activeModal) {
+            activeModal = modal;
+            if (!modal.getAttribute('role')) {
+                modal.setAttribute('role', 'dialog');
+                modal.setAttribute('aria-modal', 'true');
+            }
+            
+            updateModalFocusElements(modal);
+            
+            if (modalFocusElements.length > 0) {
+                modalFocusElements[0].focus();
+            }
+
+            if (!modal.dataset.focusTrapAttached) {
+                modal.addEventListener('keydown', handleModalKeyDown);
+                modal.dataset.focusTrapAttached = 'true';
+            }
+            announce("ダイアログが開きました。");
+        } else if (!modal && activeModal) {
+            activeModal = null;
+            modalFocusElements = [];
+            announce("ダイアログが閉じました。");
+        }
+    }
+
+    function updateModalFocusElements(modal) {
+        const selector = 'a[href], area[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), iframe, object, embed, [tabindex="0"], [contenteditable]';
+        modalFocusElements = Array.from(modal.querySelectorAll(selector));
+    }
+
+    function handleModalKeyDown(e) {
+        if (e.key === 'Tab') {
+            updateModalFocusElements(activeModal);
+            if (modalFocusElements.length === 0) return;
+
+            const firstEl = modalFocusElements[0];
+            const lastEl = modalFocusElements[modalFocusElements.length - 1];
+
+            if (e.shiftKey) {
+                if (document.activeElement === firstEl) {
+                    lastEl.focus();
+                    e.preventDefault();
+                }
+            } else {
+                if (document.activeElement === lastEl) {
+                    firstEl.focus();
+                    e.preventDefault();
+                }
+            }
+        } else if (e.key === 'Escape') {
+            const closeBtn = activeModal.querySelector('button[class*="close"], button[aria-label*="閉じる"], [class*="btn_close"]');
+            if (closeBtn) {
+                closeBtn.click();
+                e.preventDefault();
+            }
+        }
+    }
+
+    // Extract text from message node for live announcement
+    function getMessageText(msgEl) {
+        if (!msgEl) return "";
+        
+        if (msgEl.classList.toString().includes('systemMessage') || msgEl.querySelector('[class*="systemMessage"]')) {
+            return msgEl.textContent.trim();
+        }
+
+        const nameEl = msgEl.querySelector('[class*="name"], [class*="sender"], [class*="nickname"], [class*="profile"]');
+        let sender = "";
+        if (nameEl) {
+            sender = nameEl.textContent.trim();
+        } else {
+            const isMyMessage = msgEl.querySelector('[class*="my"], [class*="outgoing"]') || 
+                               msgEl.classList.toString().includes('my') || 
+                               msgEl.classList.toString().includes('outgoing');
+            sender = isMyMessage ? "自分" : "相手";
+        }
+
+        let bodyText = "";
+        const bodyEl = msgEl.querySelector('[class*="content_inner"], [class*="text"], [class*="bubble"], [class*="body_text"]');
+        if (bodyEl) {
+            bodyText = bodyEl.textContent.trim();
+        } else {
+            const clone = msgEl.cloneNode(true);
+            clone.querySelectorAll('time, [class*="time"], [class*="read"], [class*="avatar"], [class*="profile"]').forEach(el => el.remove());
+            bodyText = clone.textContent.trim();
+        }
+
+        if (!bodyText) {
+            if (msgEl.querySelector('img')) {
+                bodyText = "[画像]";
+            } else if (msgEl.querySelector('[class*="sticker"], [class*="emoticon"], [class*="emoji"]')) {
+                bodyText = "[スタンプまたは絵文字]";
+            } else if (msgEl.querySelector('[class*="file"]')) {
+                bodyText = "[ファイル]";
+            } else {
+                bodyText = "[メッセージ]";
+            }
+        }
+
+        return `${sender}: ${bodyText}`;
+    }
+
     // Main patch function called on DOM load and DOM changes
     function patchDOM() {
         // 1. Tabs (folderTab - "すべて", "グループ", "公式アカウント" など)
@@ -68,8 +207,7 @@
         tabs.forEach(tab => {
             const name = tab.textContent || 'タブ';
             makeInteractive(tab, 'tab', name);
-            // Sync aria-selected with active tab state
-            const isSelected = tab.getAttribute('aria-selected') === 'true' || tab.classList.contains('active') || tab.getAttribute('aria-selected') === 'true';
+            const isSelected = tab.getAttribute('aria-selected') === 'true' || tab.classList.contains('active');
             tab.setAttribute('aria-selected', isSelected ? 'true' : 'false');
         });
 
@@ -137,11 +275,12 @@
             makeInteractive(btn, 'button', label);
         });
 
-        // 5. Message list unread label & date headers
+        // 5. Message list unread label & date headers (Heading level 2)
         const dateHeaders = document.querySelectorAll('.messageDate-module__date_wrap__I4ily');
         dateHeaders.forEach(header => {
-            if (!header.hasAttribute('role')) {
-                header.setAttribute('role', 'separator');
+            if (header.getAttribute('role') !== 'heading') {
+                header.setAttribute('role', 'heading');
+                header.setAttribute('aria-level', '2');
                 const timeEl = header.querySelector('time');
                 if (timeEl) {
                     header.setAttribute('aria-label', timeEl.textContent);
@@ -168,20 +307,58 @@
         });
 
         // 7. Talkroom title header (H1)
-        const chatHeader = document.querySelector('.chatroomHeader-module__name__t-K11');
+        const chatHeader = document.querySelector('[class*="chatroomHeader-module__name__"]');
         if (chatHeader && chatHeader.getAttribute('role') !== 'heading') {
             chatHeader.setAttribute('role', 'heading');
             chatHeader.setAttribute('aria-level', '1');
             console.log("Applied H1 heading to chatroom title: " + chatHeader.textContent);
         }
 
-        // 8. Talkroom message headings (H2 for all messages to ensure stability)
+        // 8. Message list container (role="list") and message items (role="listitem")
+        const messageList = document.querySelector('.message_list');
+        if (messageList && messageList.getAttribute('role') !== 'list') {
+            messageList.setAttribute('role', 'list');
+        }
+        
         const messages = document.querySelectorAll('.message_list [data-message-id]');
         messages.forEach(msg => {
-            if (msg.getAttribute('role') === 'heading') return;
-            msg.setAttribute('role', 'heading');
-            msg.setAttribute('aria-level', '2');
+            if (msg.getAttribute('role') !== 'listitem') {
+                msg.setAttribute('role', 'listitem');
+                msg.removeAttribute('aria-level'); // Remove any previous heading level to clean up WAI-ARIA
+            }
         });
+
+        // 9. Input textarea accessibility label
+        const textarea = document.querySelector('[class*="chatroomEditor-module__textarea__"]');
+        if (textarea && !textarea.getAttribute('aria-label')) {
+            textarea.setAttribute('aria-label', 'メッセージを入力');
+        }
+
+        // 10. Editor buttons accessibility labels
+        const editorButtons = document.querySelectorAll('[class*="chatroomEditor"] button, [class*="chatroomEditor"] [role="button"]');
+        editorButtons.forEach(btn => {
+            if (btn.getAttribute('aria-label')) return;
+            const classStr = btn.className.toString().toLowerCase();
+            const text = btn.textContent.trim().toLowerCase();
+            
+            if (classStr.includes('sticker') || classStr.includes('stamp')) {
+                btn.setAttribute('aria-label', 'スタンプを選択');
+            } else if (classStr.includes('emoji') || classStr.includes('emoticon')) {
+                btn.setAttribute('aria-label', '絵文字を選択');
+            } else if (classStr.includes('file') || classStr.includes('upload') || classStr.includes('attachment')) {
+                btn.setAttribute('aria-label', 'ファイルを添付');
+            } else if (classStr.includes('send') || text.includes('送信') || btn.querySelector('[class*="send"]')) {
+                btn.setAttribute('aria-label', 'メッセージを送信');
+            } else {
+                const img = btn.querySelector('img');
+                if (img && img.alt) {
+                    btn.setAttribute('aria-label', img.alt);
+                }
+            }
+        });
+
+        // 11. Modal check
+        checkModalRoot();
     }
 
     // Run patch on load
@@ -191,17 +368,71 @@
         patchDOM();
     }
 
-    // Monitor DOM mutations to patch newly loaded items dynamically
+    // Monitor DOM mutations to patch newly loaded items dynamically and announce new messages
+    let currentChatroomId = null;
+    let isInitialLoading = true;
+    let initialLoadTimeout = null;
+    let lastAnnouncedMsgId = null;
+
     const observer = new MutationObserver((mutations) => {
+        const headerEl = document.querySelector('[class*="chatroomHeader-module__name__"]');
+        const chatroomId = headerEl ? headerEl.textContent.trim() : null;
+
+        if (chatroomId !== currentChatroomId) {
+            currentChatroomId = chatroomId;
+            isInitialLoading = true;
+            if (initialLoadTimeout) clearTimeout(initialLoadTimeout);
+            
+            initialLoadTimeout = setTimeout(() => {
+                isInitialLoading = false;
+                const allMsgs = document.querySelectorAll('.message_list [data-message-id]');
+                if (allMsgs.length > 0) {
+                    lastAnnouncedMsgId = allMsgs[allMsgs.length - 1].getAttribute('data-message-id');
+                }
+            }, 2000);
+            
+            if (chatroomId) {
+                announce(`${chatroomId}とのトークルームを開きました`);
+            }
+        }
+
         let shouldPatch = false;
+        let newMessages = [];
+
         for (const mutation of mutations) {
             if (mutation.addedNodes.length > 0) {
                 shouldPatch = true;
-                break;
+                mutation.addedNodes.forEach(node => {
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        if (node.hasAttribute('data-message-id')) {
+                            newMessages.push(node);
+                        } else {
+                            const msgs = node.querySelectorAll('[data-message-id]');
+                            msgs.forEach(m => newMessages.push(m));
+                        }
+                    }
+                });
             }
         }
+
         if (shouldPatch) {
             patchDOM();
+            
+            if (!isInitialLoading && newMessages.length > 0) {
+                const allMessages = Array.from(document.querySelectorAll('.message_list [data-message-id]'));
+                if (allMessages.length > 0) {
+                    const latestMsg = allMessages[allMessages.length - 1];
+                    const latestMsgId = latestMsg.getAttribute('data-message-id');
+                    
+                    if (latestMsgId !== lastAnnouncedMsgId) {
+                        lastAnnouncedMsgId = latestMsgId;
+                        const text = getMessageText(latestMsg);
+                        if (text) {
+                            announce(text);
+                        }
+                    }
+                }
+            }
         }
     });
 
