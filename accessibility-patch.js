@@ -28,6 +28,202 @@
         console.error("Accessibility Patch: CSS injection failed", e);
     }
 
+    // --- Keyboard Navigation Helpers ---
+    let hasFocusedEditorForRoom = false;
+
+    function getAdjacentMessage(currentMsg, direction) {
+        try {
+            const messages = Array.from(document.querySelectorAll('.message_list [data-message-id], [class*="message_list"] [data-message-id]'));
+            const index = messages.indexOf(currentMsg);
+            if (index === -1) return null;
+            const targetIndex = index + direction;
+            if (targetIndex >= 0 && targetIndex < messages.length) {
+                return messages[targetIndex];
+            }
+        } catch (e) {
+            console.error("Accessibility Patch: getAdjacentMessage failed", e);
+        }
+        return null;
+    }
+
+    function getMessageTextForLabel(msgEl) {
+        if (!msgEl) return "";
+        try {
+            const classStr = msgEl.className ? msgEl.className.toString() : '';
+            if (classStr.includes('systemMessage') || msgEl.querySelector('[class*="systemMessage"]')) {
+                return msgEl.textContent.trim();
+            }
+
+            // Get the main layout container of the message
+            const layoutEl = msgEl.closest('[class*="messageLayout-module__message__"]');
+            
+            let sender = "";
+            let isMyMessage = false;
+
+            if (layoutEl) {
+                isMyMessage = layoutEl.getAttribute('data-direction') === 'reverse';
+            } else {
+                isMyMessage = msgEl.getAttribute('data-direction') === 'reverse' || 
+                               msgEl.querySelector('[data-direction="reverse"]') ||
+                               classStr.includes('reverse') || 
+                               msgEl.querySelector('[class*="reverse"]') ||
+                               msgEl.querySelector('[class*="my"], [class*="outgoing"]') || 
+                               classStr.includes('my') || 
+                               classStr.includes('outgoing');
+            }
+
+            if (isMyMessage) {
+                sender = "自分";
+            } else {
+                let senderName = "";
+                if (layoutEl) {
+                    const primaryNameEl = layoutEl.querySelector('[class*="username-module__username__"]');
+                    if (primaryNameEl) {
+                        senderName = primaryNameEl.textContent.trim();
+                    }
+                    if (!senderName) {
+                        const backupNameEl = layoutEl.querySelector('[class*="username"], [class*="name"], [class*="sender"], [class*="nickname"]');
+                        if (backupNameEl) {
+                            senderName = backupNameEl.textContent.trim();
+                        }
+                    }
+                } else {
+                    const backupNameEl = msgEl.querySelector('[class*="username-module__username__"], [class*="username"], [class*="name"], [class*="sender"], [class*="nickname"]');
+                    if (backupNameEl) {
+                        senderName = backupNameEl.textContent.trim();
+                    }
+                }
+                sender = senderName || "相手";
+            }
+
+            let bodyText = "";
+            const bodyEl = msgEl.querySelector('[class*="content_inner"], [class*="text"], [class*="bubble"], [class*="body_text"]');
+            if (bodyEl) {
+                bodyText = bodyEl.textContent.trim();
+            } else {
+                const clone = msgEl.cloneNode(true);
+                clone.querySelectorAll('time, [class*="time"], [class*="read"], [class*="avatar"], [class*="profile"]').forEach(el => el.remove());
+                bodyText = clone.textContent.trim();
+            }
+
+            if (!bodyText) {
+                if (msgEl.querySelector('img')) {
+                    bodyText = "[画像]";
+                } else if (msgEl.querySelector('[class*="sticker"], [class*="emoticon"], [class*="emoji"]')) {
+                    bodyText = "[スタンプまたは絵文字]";
+                } else if (msgEl.querySelector('[class*="file"]')) {
+                    bodyText = "[ファイル]";
+                } else {
+                    bodyText = "[メッセージ]";
+                }
+            }
+
+            const timeEl = msgEl.querySelector('time, [class*="time"]') || (layoutEl ? layoutEl.querySelector('time, [class*="time"]') : null);
+            const time = timeEl ? timeEl.textContent.trim() : "";
+            
+            return `${sender}: ${bodyText} ${time}`.trim();
+        } catch (e) {
+            console.error("Accessibility Patch: getMessageTextForLabel failed", e);
+            return "";
+        }
+    }
+
+    function focusMessageList() {
+        try {
+            const messages = Array.from(document.querySelectorAll('.message_list [data-message-id], [class*="message_list"] [data-message-id]'));
+            if (messages.length === 0) return;
+
+            let firstUnreadMsg = null;
+            const messageListEl = document.querySelector('.message_list, [class*="message_list"]');
+            if (messageListEl) {
+                const unreadDividers = messageListEl.querySelectorAll('[class*="unread"], [class*="divider"], [class*="UnreadLine"]');
+                let unreadDivider = null;
+                for (const el of unreadDividers) {
+                    const text = el.textContent || "";
+                    if (text.includes("未読") || text.toLowerCase().includes("unread") || text.toLowerCase().includes("new message")) {
+                        unreadDivider = el;
+                        break;
+                    }
+                }
+                
+                if (unreadDivider) {
+                    for (const msg of messages) {
+                        if (unreadDivider.compareDocumentPosition(msg) & Node.DOCUMENT_POSITION_FOLLOWING) {
+                            firstUnreadMsg = msg;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (firstUnreadMsg) {
+                firstUnreadMsg.setAttribute('tabindex', '-1');
+                firstUnreadMsg.focus();
+                announce("最初の未読メッセージにフォーカスしました");
+                console.log("Focused first unread message.");
+            } else {
+                const latestMsg = messages[messages.length - 1];
+                latestMsg.setAttribute('tabindex', '-1');
+                latestMsg.focus();
+                announce("最新のメッセージにフォーカスしました");
+                console.log("Focused latest message.");
+            }
+        } catch (e) {
+            console.error("Accessibility Patch: focusMessageList failed", e);
+        }
+    }
+
+    // Global Event Listeners to block LINE official shortcuts when focusing on messages
+    window.addEventListener('keydown', function(e) {
+        const activeEl = document.activeElement;
+        if (!activeEl) return;
+        
+        const msg = activeEl.closest('[data-message-id]');
+        if (!msg) return;
+        
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Tab') {
+            if (e.key === 'Tab' && e.shiftKey) {
+                // Let Shift+Tab propagate normally to move focus back
+                return;
+            }
+            
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            e.preventDefault();
+            
+            if (e.key === 'ArrowUp') {
+                const prevMsg = getAdjacentMessage(msg, -1);
+                if (prevMsg) prevMsg.focus();
+            } else if (e.key === 'ArrowDown') {
+                const nextMsg = getAdjacentMessage(msg, 1);
+                if (nextMsg) {
+                    nextMsg.focus();
+                } else {
+                    const textarea = document.querySelector('[class*="chatroomEditor-module__textarea__"]');
+                    if (textarea) textarea.focus();
+                }
+            } else if (e.key === 'Tab') {
+                const textarea = document.querySelector('[class*="chatroomEditor-module__textarea__"]');
+                if (textarea) textarea.focus();
+            }
+        }
+    }, true); // Capture phase to intercept global listeners
+
+    function preventGlobalShortcuts(e) {
+        const activeEl = document.activeElement;
+        if (!activeEl) return;
+        const msg = activeEl.closest('[data-message-id]');
+        if (!msg) return;
+        
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) {
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            e.preventDefault();
+        }
+    }
+    window.addEventListener('keyup', preventGlobalShortcuts, true);
+    window.addEventListener('keypress', preventGlobalShortcuts, true);
+
     // 1. Announcer region for Screen Readers (Live Region) - Safely deferred
     let announcer = null;
     function initAnnouncer() {
@@ -205,15 +401,46 @@
                 return msgEl.textContent.trim();
             }
 
-            const nameEl = msgEl.querySelector('[class*="name"], [class*="sender"], [class*="nickname"], [class*="profile"]');
+            // Get the main layout container of the message
+            const layoutEl = msgEl.closest('[class*="messageLayout-module__message__"]');
+            
             let sender = "";
-            if (nameEl) {
-                sender = nameEl.textContent.trim();
+            let isMyMessage = false;
+
+            if (layoutEl) {
+                isMyMessage = layoutEl.getAttribute('data-direction') === 'reverse';
             } else {
-                const isMyMessage = msgEl.querySelector('[class*="my"], [class*="outgoing"]') || 
-                                   classStr.includes('my') || 
-                                   classStr.includes('outgoing');
-                sender = isMyMessage ? "自分" : "相手";
+                isMyMessage = msgEl.getAttribute('data-direction') === 'reverse' || 
+                               msgEl.querySelector('[data-direction="reverse"]') ||
+                               classStr.includes('reverse') || 
+                               msgEl.querySelector('[class*="reverse"]') ||
+                               msgEl.querySelector('[class*="my"], [class*="outgoing"]') || 
+                               classStr.includes('my') || 
+                               classStr.includes('outgoing');
+            }
+
+            if (isMyMessage) {
+                sender = "自分";
+            } else {
+                let senderName = "";
+                if (layoutEl) {
+                    const primaryNameEl = layoutEl.querySelector('[class*="username-module__username__"]');
+                    if (primaryNameEl) {
+                        senderName = primaryNameEl.textContent.trim();
+                    }
+                    if (!senderName) {
+                        const backupNameEl = layoutEl.querySelector('[class*="username"], [class*="name"], [class*="sender"], [class*="nickname"]');
+                        if (backupNameEl) {
+                            senderName = backupNameEl.textContent.trim();
+                        }
+                    }
+                } else {
+                    const backupNameEl = msgEl.querySelector('[class*="username-module__username__"], [class*="username"], [class*="name"], [class*="sender"], [class*="nickname"]');
+                    if (backupNameEl) {
+                        senderName = backupNameEl.textContent.trim();
+                    }
+                }
+                sender = senderName || "相手";
             }
 
             let bodyText = "";
@@ -415,7 +642,7 @@
             }
         } catch (e) { console.error("Patch Error (ChatroomHeader):", e); }
 
-        // 8. Remove list/listitem roles to prevent screen reader repeating the date header for each message - Hash-independent
+        // 8. Remove list/listitem roles and apply screen reader aria-labels
         try {
             const messageList = document.querySelector('.message_list') || document.querySelector('[class*="message_list"]');
             if (messageList) {
@@ -427,14 +654,40 @@
             messages.forEach(msg => {
                 msg.removeAttribute('role');
                 msg.removeAttribute('aria-level');
+                
+                // Set custom accessible label: "Sender: Message Time"
+                const readLabel = getMessageTextForLabel(msg);
+                if (readLabel && msg.getAttribute('aria-label') !== readLabel) {
+                    msg.setAttribute('aria-label', readLabel);
+                }
+                
+                if (!msg.hasAttribute('tabindex')) {
+                    msg.setAttribute('tabindex', '-1');
+                }
             });
         } catch (e) { console.error("Patch Error (MessageRoles):", e); }
 
-        // 9. Input textarea accessibility label - Hash-independent
+        // 9. Input textarea accessibility label, Shift+Tab handler, and automatic focus
         try {
             const textarea = document.querySelector('[class*="chatroomEditor-module__textarea__"]');
-            if (textarea && !textarea.getAttribute('aria-label')) {
-                textarea.setAttribute('aria-label', 'メッセージを入力');
+            if (textarea) {
+                if (!textarea.getAttribute('aria-label')) {
+                    textarea.setAttribute('aria-label', 'メッセージを入力');
+                }
+                if (!textarea.dataset.shiftTabHandlerAttached) {
+                    textarea.addEventListener('keydown', function(e) {
+                        if (e.key === 'Tab' && e.shiftKey) {
+                            e.preventDefault();
+                            focusMessageList();
+                        }
+                    });
+                    textarea.dataset.shiftTabHandlerAttached = 'true';
+                }
+                if (!hasFocusedEditorForRoom) {
+                    textarea.focus();
+                    hasFocusedEditorForRoom = true;
+                    console.log("Automatically focused message textarea via patchDOM.");
+                }
             }
         } catch (e) { console.error("Patch Error (Textarea):", e); }
 
@@ -490,6 +743,7 @@
 
                 if (chatroomId !== currentChatroomId) {
                     currentChatroomId = chatroomId;
+                    hasFocusedEditorForRoom = false; // Reset focus flag for the new room
                     isInitialLoading = true;
                     if (initialLoadTimeout) clearTimeout(initialLoadTimeout);
                     
