@@ -245,6 +245,129 @@
         }
     }, true); // Capture phase to monitor and conditionally preventDefault keydown events
 
+    // Keep track of the last announced cursor position inside the mention to prevent repeat announcements
+    let lastAnnouncedPos = -1;
+    let lastSelectionStart = -1;
+    let selectionChangeCount = 0;
+    let keyEventCount = 0;
+
+    // Helper to check mention under the cursor and announce it
+    function checkMentionCursor(activeEl) {
+        try {
+            if (!activeEl) return;
+            const className = getSafeClassName(activeEl);
+            
+            // Check if active element is the chatroom textarea (contenteditable or Shadow Host/textarea-ex)
+            const isTextarea = className.includes('chatroomEditor') || 
+                               activeEl.closest('[class*="chatroomEditor-module__textarea__"]') ||
+                               activeEl.tagName === 'TEXTAREA-EX';
+                                
+            if (!isTextarea) {
+                lastAnnouncedPos = -1;
+                lastSelectionStart = -1;
+                return;
+            }
+            
+            let textarea = null;
+            if (activeEl.shadowRoot) {
+                textarea = activeEl.shadowRoot.querySelector('textarea');
+            }
+            if (!textarea && activeEl.tagName === 'TEXTAREA') {
+                textarea = activeEl;
+            }
+            
+            if (!textarea) {
+                lastAnnouncedPos = -1;
+                lastSelectionStart = -1;
+                return;
+            }
+            
+            const rawValue = activeEl.rawValue;
+            const pos = textarea.selectionStart;
+            
+            if (!rawValue || typeof rawValue !== 'string') {
+                lastAnnouncedPos = -1;
+                lastSelectionStart = -1;
+                return;
+            }
+            
+            const pool = activeEl._characterPool;
+            if (!pool || typeof pool.getBlock !== 'function') {
+                lastAnnouncedPos = -1;
+                lastSelectionStart = -1;
+                return;
+            }
+            
+            const prevPos = lastSelectionStart;
+            lastSelectionStart = pos;
+
+            // Check only the character directly under/after the cursor (at index pos)
+            // This represents the character the cursor is currently "on" (to the right of the cursor)
+            const indices = [pos];
+            
+            let mentionBlock = null;
+            let mentionIndex = -1;
+            
+            for (const idx of indices) {
+                if (idx >= 0 && idx < rawValue.length) {
+                    const char = rawValue[idx];
+                    const block = pool.getBlock(char);
+                    if (block && (block.type === 'mention' || block.part === 'mention' || (block.part && block.part.includes('mention')))) {
+                        mentionBlock = block;
+                        mentionIndex = idx; // Store the exact index of this PUA block char in rawValue
+                        break;
+                    }
+                }
+            }
+            
+            if (mentionBlock) {
+                // Announce if the cursor position (pos) has changed
+                if (lastAnnouncedPos !== pos) {
+                    lastAnnouncedPos = pos;
+                    const name = mentionBlock.altText || mentionBlock.text || "相手";
+                    if (name) {
+                        const cleanName = name.startsWith('@') ? name : '@' + name;
+                        announce(`メンション: ${cleanName.trim()}`, true); // Speak assertively
+                    }
+                }
+            } else {
+                lastAnnouncedPos = -1;
+            }
+        } catch (e) {
+            console.error("Accessibility Patch: checkMentionCursor error", e);
+        }
+    }
+
+    // Handle cursor movement inside message editor (selectionchange event)
+    document.addEventListener('selectionchange', function() {
+        selectionChangeCount++;
+        const activeEl = document.activeElement;
+        checkMentionCursor(activeEl);
+    });
+
+    // Fallback: Handle cursor movement via Arrow keys (keyup/keydown event inside editor)
+    window.addEventListener('keyup', function(e) {
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Home' || e.key === 'End') {
+            keyEventCount++;
+            const activeEl = document.activeElement;
+            // Introduce a tiny delay to ensure textarea.selectionStart has updated
+            setTimeout(() => {
+                checkMentionCursor(activeEl);
+            }, 10);
+        }
+    }, true);
+
+    window.addEventListener('keydown', function(e) {
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Home' || e.key === 'End') {
+            keyEventCount++;
+            const activeEl = document.activeElement;
+            setTimeout(() => {
+                checkMentionCursor(activeEl);
+            }, 10);
+        }
+    }, true);
+
+
     function preventGlobalShortcuts(e) {
         const activeEl = document.activeElement;
         if (!activeEl) return;
@@ -309,21 +432,26 @@
         }
     }
 
+    let announceToggle = false;
     function announce(message, isAssertive = false) {
         initAnnouncer();
         const target = isAssertive ? announcerAssertive : announcer;
         if (target) {
+            // 末尾に不可視のゼロ幅スペースを交互に付与して、毎回必ずDOMテキストが変化したとブラウザに認識させる
+            announceToggle = !announceToggle;
+            const tweakedMessage = message + (announceToggle ? "\u200B" : "");
+
             if (isAssertive) {
                 if (announceTimeoutAssertive) clearTimeout(announceTimeoutAssertive);
                 target.textContent = '';
                 announceTimeoutAssertive = setTimeout(() => {
-                    target.textContent = message;
+                    target.textContent = tweakedMessage;
                 }, 50); // 50msの隙間を開けてスクリーンリーダーに変更を強制通知
             } else {
                 if (announceTimeoutPolite) clearTimeout(announceTimeoutPolite);
                 target.textContent = '';
                 announceTimeoutPolite = setTimeout(() => {
-                    target.textContent = message;
+                    target.textContent = tweakedMessage;
                 }, 50);
             }
         }
