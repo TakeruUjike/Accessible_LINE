@@ -30,6 +30,7 @@
 
     // --- Keyboard Navigation Helpers ---
     let hasFocusedEditorForRoom = false;
+    let isMentionListActive = false;
 
     function getAdjacentMessage(currentMsg, direction) {
         try {
@@ -209,6 +210,41 @@
         }
     }, true); // Capture phase to intercept global listeners
 
+    // Keyboard navigation and announcements for Mention Suggestion List (Combobox & Assertive Live Region)
+    window.addEventListener('keydown', function(e) {
+        const activeEl = document.activeElement;
+        if (!activeEl) return;
+
+        const isTextarea = activeEl.className.includes('chatroomEditor') || 
+                           activeEl.closest('[class*="chatroomEditor-module__textarea__"]');
+        const mentionList = document.querySelector('[class*="mentionSuggestion-module__suggestion_list__"]');
+
+        if (isTextarea && mentionList) {
+            // 上下矢印キーが押されたとき
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                // ブラウザのデフォルトのカーソル移動挙動（スクリーンリーダーの自動読み上げのトリガー）をブロックする！
+                e.preventDefault();
+
+                setTimeout(() => {
+                    const selectedEl = mentionList.querySelector('[aria-selected="true"]');
+                    if (selectedEl) {
+                        // その場で一意のIDを付与する（Reactの再描画によるID消失対策）
+                        const itemId = 'accessible-selected-mention-item';
+                        if (selectedEl.id !== itemId) {
+                            selectedEl.id = itemId;
+                        }
+                        activeEl.setAttribute('aria-activedescendant', itemId);
+                        
+                        // 強制割り込み（assertive）で名前を読み上げる
+                        const infoEl = selectedEl.querySelector('[class*="suggestion_item_info"]') || selectedEl.querySelector('.suggestion_item_info') || selectedEl;
+                        const name = infoEl.textContent.trim();
+                        announce(`選択: ${name}`, true); // "選択: 山田太郎" のように明示的に読み上げる
+                    }
+                }, 80); // ReactのDOM更新後に確実に実行するために80ms待つ
+            }
+        }
+    }, true); // Capture phase to monitor and conditionally preventDefault keydown events
+
     function preventGlobalShortcuts(e) {
         const activeEl = document.activeElement;
         if (!activeEl) return;
@@ -226,39 +262,70 @@
 
     // 1. Announcer region for Screen Readers (Live Region) - Safely deferred
     let announcer = null;
+    let announcerAssertive = null;
+    let announceTimeoutPolite = null;
+    let announceTimeoutAssertive = null;
+
+    function applyAnnouncerStyles(el) {
+        el.style.position = 'absolute';
+        el.style.width = '1px';
+        el.style.height = '1px';
+        el.style.padding = '0';
+        el.style.margin = '-1px';
+        el.style.overflow = 'hidden';
+        el.style.clip = 'rect(0, 0, 0, 0)';
+        el.style.border = '0';
+    }
+
     function initAnnouncer() {
-        if (announcer) return;
+        if (announcer && announcerAssertive) return;
         try {
-            announcer = document.getElementById('sr-announcer');
-            if (!announcer && document.body) {
-                announcer = document.createElement('div');
-                announcer.id = 'sr-announcer';
-                announcer.setAttribute('aria-live', 'polite');
-                announcer.setAttribute('aria-atomic', 'true');
-                // Visually hidden styles (sr-only)
-                announcer.style.position = 'absolute';
-                announcer.style.width = '1px';
-                announcer.style.height = '1px';
-                announcer.style.padding = '0';
-                announcer.style.margin = '-1px';
-                announcer.style.overflow = 'hidden';
-                announcer.style.clip = 'rect(0, 0, 0, 0)';
-                announcer.style.border = '0';
-                document.body.appendChild(announcer);
-                console.log("Accessibility Announcer initialized.");
+            if (!announcer) {
+                announcer = document.getElementById('sr-announcer');
+                if (!announcer && document.body) {
+                    announcer = document.createElement('div');
+                    announcer.id = 'sr-announcer';
+                    announcer.setAttribute('aria-live', 'polite');
+                    announcer.setAttribute('aria-atomic', 'true');
+                    applyAnnouncerStyles(announcer);
+                    document.body.appendChild(announcer);
+                    console.log("Accessibility Announcer initialized.");
+                }
+            }
+            if (!announcerAssertive) {
+                announcerAssertive = document.getElementById('sr-announcer-assertive');
+                if (!announcerAssertive && document.body) {
+                    announcerAssertive = document.createElement('div');
+                    announcerAssertive.id = 'sr-announcer-assertive';
+                    announcerAssertive.setAttribute('aria-live', 'assertive');
+                    announcerAssertive.setAttribute('aria-atomic', 'true');
+                    applyAnnouncerStyles(announcerAssertive);
+                    document.body.appendChild(announcerAssertive);
+                    console.log("Assertive Accessibility Announcer initialized.");
+                }
             }
         } catch (e) {
             console.error("Accessibility Patch: Failed to initialize announcer", e);
         }
     }
 
-    function announce(message) {
+    function announce(message, isAssertive = false) {
         initAnnouncer();
-        if (announcer) {
-            announcer.textContent = '';
-            setTimeout(() => {
-                announcer.textContent = message;
-            }, 100);
+        const target = isAssertive ? announcerAssertive : announcer;
+        if (target) {
+            if (isAssertive) {
+                if (announceTimeoutAssertive) clearTimeout(announceTimeoutAssertive);
+                target.textContent = '';
+                announceTimeoutAssertive = setTimeout(() => {
+                    target.textContent = message;
+                }, 50); // 50msの隙間を開けてスクリーンリーダーに変更を強制通知
+            } else {
+                if (announceTimeoutPolite) clearTimeout(announceTimeoutPolite);
+                target.textContent = '';
+                announceTimeoutPolite = setTimeout(() => {
+                    target.textContent = message;
+                }, 50);
+            }
         }
     }
 
@@ -720,6 +787,64 @@
         try {
             checkModalRoot();
         } catch (e) { console.error("Patch Error (ModalCheck):", e); }
+
+        // 12. Mention suggestion list accessibility (WAI-ARIA Combobox Pattern)
+        try {
+            const mentionList = document.querySelector('[class*="mentionSuggestion-module__suggestion_list__"]');
+            const textarea = document.querySelector('[class*="chatroomEditor-module__textarea__"]');
+            
+            if (mentionList && textarea) {
+                // 1. リスト本体の設定
+                if (!mentionList.id) {
+                    mentionList.id = 'accessible-mention-list';
+                }
+                if (mentionList.getAttribute('role') !== 'listbox') {
+                    mentionList.setAttribute('role', 'listbox');
+                }
+
+                // 2. 入力欄の設定
+                if (textarea.getAttribute('role') !== 'combobox') {
+                    textarea.setAttribute('role', 'combobox');
+                    textarea.setAttribute('aria-autocomplete', 'list');
+                    textarea.setAttribute('aria-haspopup', 'listbox');
+                    textarea.setAttribute('aria-controls', 'accessible-mention-list');
+                    textarea.setAttribute('aria-expanded', 'true');
+                }
+
+                // 3. 各リストアイテムの設定
+                const items = mentionList.querySelectorAll('[class*="mentionSuggestion-module__suggestion_list_item__"]');
+                items.forEach((item, index) => {
+                    if (item.getAttribute('role') !== 'option') {
+                        item.setAttribute('role', 'option');
+                    }
+                    const itemId = `accessible-mention-item-${index}`;
+                    if (item.id !== itemId) {
+                        item.id = itemId;
+                    }
+                    
+                    if (!item.getAttribute('aria-label')) {
+                        const infoEl = item.querySelector('[class*="suggestion_item_info"]') || item.querySelector('.suggestion_item_info') || item;
+                        const name = infoEl.textContent.trim();
+                        item.setAttribute('aria-label', name);
+                    }
+                });
+
+                if (!isMentionListActive) {
+                    isMentionListActive = true;
+                    announce("メンション候補が表示されました。上下矢印キーで選択できます。");
+                }
+            } else {
+                if (isMentionListActive) {
+                    isMentionListActive = false;
+                    if (textarea) {
+                        textarea.removeAttribute('aria-activedescendant');
+                        textarea.setAttribute('aria-expanded', 'false');
+                    }
+                }
+            }
+        } catch (e) {
+            console.error("Patch Error (MentionList):", e);
+        }
     }
 
     // Run patch on load
