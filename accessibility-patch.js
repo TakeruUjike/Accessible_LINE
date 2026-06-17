@@ -47,6 +47,41 @@
         return null;
     }
 
+    function getLeftSidebarLastElement() {
+        try {
+            const chatItems = Array.from(document.querySelectorAll('[class*="chatlistItem-module__chatlist_item__"]'));
+            const friendItems = Array.from(document.querySelectorAll('[class*="friendlistItem-module__item__"]'));
+            
+            const visibleChatItems = chatItems.filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+            const visibleFriendItems = friendItems.filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+            
+            if (visibleChatItems.length > 0) {
+                const lastItem = visibleChatItems[visibleChatItems.length - 1];
+                const clickBtn = lastItem.querySelector('button[class*="button_chatlist_item"], button, [tabindex="0"]');
+                return clickBtn || lastItem;
+            }
+            
+            if (visibleFriendItems.length > 0) {
+                const lastItem = visibleFriendItems[visibleFriendItems.length - 1];
+                const clickBtn = lastItem.querySelector('button[class*="button_friend"], button, [tabindex="0"]');
+                return clickBtn || lastItem;
+            }
+
+            const tabs = Array.from(document.querySelectorAll('[class*="folderTab-module__tab_item__"]')).filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+            if (tabs.length > 0) {
+                return tabs[tabs.length - 1];
+            }
+            
+            const gnbItems = Array.from(document.querySelectorAll('[class*="gnb"] button, [class*="gnb"] a, [class*="gnb"] li [tabindex="0"]')).filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+            if (gnbItems.length > 0) {
+                return gnbItems[gnbItems.length - 1];
+            }
+        } catch (e) {
+            console.error("Accessibility Patch: getLeftSidebarLastElement failed", e);
+        }
+        return null;
+    }
+
     function getMessageTextForLabel(msgEl) {
         if (!msgEl) return "";
         try {
@@ -179,12 +214,20 @@
         const activeEl = document.activeElement;
         if (!activeEl) return;
         
-        const msg = activeEl.closest('[data-message-id]');
+        const msg = activeEl.closest('.message_list [data-message-id], [class*="message_list"] [data-message-id]');
         if (!msg) return;
         
         if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Tab') {
             if (e.key === 'Tab' && e.shiftKey) {
-                // Let Shift+Tab propagate normally to move focus back
+                const leftSidebarTarget = getLeftSidebarLastElement();
+                if (leftSidebarTarget) {
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    e.preventDefault();
+                    leftSidebarTarget.focus();
+                    announce("左側のリストの最後にフォーカスしました");
+                    console.log("Shift+Tab captured: focused left sidebar target.");
+                }
                 return;
             }
             
@@ -209,6 +252,44 @@
             }
         }
     }, true); // Capture phase to intercept global listeners
+
+    // Force focus navigation for editor buttons to bypass official LINE focus traps/blocks
+    window.addEventListener('keydown', function(e) {
+        const activeEl = document.activeElement;
+        if (!activeEl) return;
+
+        const editorBtn = activeEl.closest('[class*="chatroomEditor"] button, [class*="chatroomEditor"] [role="button"]');
+        if (editorBtn && e.key === 'Tab') {
+            try {
+                const editorButtons = Array.from(document.querySelectorAll('[class*="chatroomEditor"] button, [class*="chatroomEditor"] [role="button"]'))
+                    .filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+                
+                const index = editorButtons.indexOf(editorBtn);
+                if (index !== -1) {
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    e.preventDefault();
+
+                    if (e.shiftKey) {
+                        if (index === 0) {
+                            const textarea = document.querySelector('[class*="chatroomEditor-module__textarea__"]');
+                            if (textarea) textarea.focus();
+                        } else {
+                            editorButtons[index - 1].focus();
+                        }
+                    } else {
+                        if (index === editorButtons.length - 1) {
+                            focusMessageList();
+                        } else {
+                            editorButtons[index + 1].focus();
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error("Accessibility Patch: Editor button tab bypass failed", err);
+            }
+        }
+    }, true);
 
     // Keyboard navigation and announcements for Mention Suggestion List (Combobox & Assertive Live Region)
     window.addEventListener('keydown', function(e) {
@@ -282,56 +363,77 @@
                 return;
             }
             
-            const rawValue = activeEl.rawValue;
             const pos = textarea.selectionStart;
-            
-            if (!rawValue || typeof rawValue !== 'string') {
-                lastAnnouncedPos = -1;
-                lastSelectionStart = -1;
-                return;
-            }
-            
+            const rawValue = activeEl.rawValue;
             const pool = activeEl._characterPool;
-            if (!pool || typeof pool.getBlock !== 'function') {
-                lastAnnouncedPos = -1;
-                lastSelectionStart = -1;
-                return;
-            }
-            
-            const prevPos = lastSelectionStart;
-            lastSelectionStart = pos;
 
-            // Check only the character directly under/after the cursor (at index pos)
-            // This represents the character the cursor is currently "on" (to the right of the cursor)
-            const indices = [pos];
-            
-            let mentionBlock = null;
-            let mentionIndex = -1;
-            
-            for (const idx of indices) {
-                if (idx >= 0 && idx < rawValue.length) {
-                    const char = rawValue[idx];
-                    const block = pool.getBlock(char);
-                    if (block && (block.type === 'mention' || block.part === 'mention' || (block.part && block.part.includes('mention')))) {
-                        mentionBlock = block;
-                        mentionIndex = idx; // Store the exact index of this PUA block char in rawValue
+            const useProprietary = rawValue && typeof rawValue === 'string' && pool && typeof pool.getBlock === 'function';
+
+            if (useProprietary) {
+                const prevPos = lastSelectionStart;
+                lastSelectionStart = pos;
+
+                // Check only the character directly under/after the cursor (at index pos)
+                // This represents the character the cursor is currently "on" (to the right of the cursor)
+                const indices = [pos];
+                
+                let mentionBlock = null;
+                let mentionIndex = -1;
+                
+                for (const idx of indices) {
+                    if (idx >= 0 && idx < rawValue.length) {
+                        const char = rawValue[idx];
+                        const block = pool.getBlock(char);
+                        if (block && (block.type === 'mention' || block.part === 'mention' || (block.part && block.part.includes('mention')))) {
+                            mentionBlock = block;
+                            mentionIndex = idx; // Store the exact index of this PUA block char in rawValue
+                            break;
+                        }
+                    }
+                }
+                
+                if (mentionBlock) {
+                    // Announce if the cursor position (pos) has changed
+                    if (lastAnnouncedPos !== pos) {
+                        lastAnnouncedPos = pos;
+                        const name = mentionBlock.altText || mentionBlock.text || "相手";
+                        if (name) {
+                            const cleanName = name.startsWith('@') ? name : '@' + name;
+                            announce(`メンション: ${cleanName.trim()}`, true); // Speak assertively
+                        }
+                    }
+                } else {
+                    lastAnnouncedPos = -1;
+                }
+            } else {
+                // Fallback string-based mention detection if proprietary API is missing
+                const textValue = textarea.value || activeEl.value || activeEl.textContent || "";
+                const prevPos = lastSelectionStart;
+                lastSelectionStart = pos;
+
+                // Find all potential mentions in the text (e.g., @Name)
+                const mentionRegex = /@[^\s@]+/g;
+                let match;
+                let currentMention = null;
+
+                while ((match = mentionRegex.exec(textValue)) !== null) {
+                    const start = match.index;
+                    const end = match.index + match[0].length;
+                    // Check if cursor is on/inside the mention (from @ up to the end of the mention text)
+                    if (pos >= start && pos <= end) {
+                        currentMention = match[0];
                         break;
                     }
                 }
-            }
-            
-            if (mentionBlock) {
-                // Announce if the cursor position (pos) has changed
-                if (lastAnnouncedPos !== pos) {
-                    lastAnnouncedPos = pos;
-                    const name = mentionBlock.altText || mentionBlock.text || "相手";
-                    if (name) {
-                        const cleanName = name.startsWith('@') ? name : '@' + name;
-                        announce(`メンション: ${cleanName.trim()}`, true); // Speak assertively
+
+                if (currentMention) {
+                    if (lastAnnouncedPos !== pos) {
+                        lastAnnouncedPos = pos;
+                        announce(`メンション: ${currentMention.trim()}`, true);
                     }
+                } else {
+                    lastAnnouncedPos = -1;
                 }
-            } else {
-                lastAnnouncedPos = -1;
             }
         } catch (e) {
             console.error("Accessibility Patch: checkMentionCursor error", e);
@@ -371,7 +473,7 @@
     function preventGlobalShortcuts(e) {
         const activeEl = document.activeElement;
         if (!activeEl) return;
-        const msg = activeEl.closest('[data-message-id]');
+        const msg = activeEl.closest('.message_list [data-message-id], [class*="message_list"] [data-message-id]');
         if (!msg) return;
         
         if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) {
@@ -512,12 +614,35 @@
     let activeModal = null;
     let modalFocusElements = [];
 
+    function isElementVisible(el) {
+        if (!el) return false;
+        try {
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+                return false;
+            }
+            if (el.offsetWidth === 0 && el.offsetHeight === 0) {
+                return false;
+            }
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
     function checkModalRoot() {
         try {
             const modalRoot = document.getElementById('modal-root');
             if (!modalRoot) return;
 
-            const modal = modalRoot.firstElementChild;
+            let modal = null;
+            for (const child of modalRoot.children) {
+                if (isElementVisible(child)) {
+                    modal = child;
+                    break;
+                }
+            }
+
             if (modal && modal !== activeModal) {
                 activeModal = modal;
                 if (!modal.getAttribute('role')) {
@@ -537,6 +662,10 @@
                 }
                 announce("ダイアログが開きました。");
             } else if (!modal && activeModal) {
+                if (activeModal.dataset.focusTrapAttached) {
+                    activeModal.removeEventListener('keydown', handleModalKeyDown);
+                    delete activeModal.dataset.focusTrapAttached;
+                }
                 activeModal = null;
                 modalFocusElements = [];
                 announce("ダイアログが閉じました。");
@@ -559,7 +688,7 @@
         try {
             if (e.key === 'Tab') {
                 updateModalFocusElements(activeModal);
-                if (modalFocusElements.length === 0) return;
+                if (modalFocusElements.length <= 1) return; // Safe: don't trap if there is 1 or 0 focusable elements
 
                 const firstEl = modalFocusElements[0];
                 const lastEl = modalFocusElements[modalFocusElements.length - 1];
@@ -837,11 +966,14 @@
             }
         } catch (e) { console.error("Patch Error (ChatroomHeader):", e); }
 
-        // 8. Remove list/listitem roles and apply screen reader aria-labels
+        // 8. Apply application role to message list container to maintain NVDA focus mode, and set aria-labels
         try {
             const messageList = document.querySelector('.message_list') || document.querySelector('[class*="message_list"]');
             if (messageList) {
-                messageList.removeAttribute('role');
+                if (messageList.getAttribute('role') !== 'application') {
+                    messageList.setAttribute('role', 'application');
+                    messageList.setAttribute('aria-label', 'メッセージ履歴');
+                }
             }
             
             const messages = document.querySelectorAll('.message_list [data-message-id]') || 
