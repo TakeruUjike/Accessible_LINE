@@ -209,6 +209,213 @@
         }
     }
 
+    // F6 / Shift+F6 ペイン循環切り替え機能 (Slack風)
+    window.addEventListener('keydown', function(e) {
+        if (e.key === 'F6') {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+
+            const areas = {
+                gnb: document.querySelector('#root > div > div > div.gnb-module__gnb__01tnB') || 
+                     document.querySelector('[class*="gnb-module__gnb__"]') || 
+                     document.querySelector('[class*="gnb"]'),
+                left: document.querySelector('#root > div > div > div.chatlist-module__chatlist_wrap__KtTpq > div.chatlist-module__chatlist__qruAE > div > div > div > div') || 
+                      document.querySelector('#root > div > div > div.friendlist-module__list_wrap__IeJXY > div.friendlist-module__list__Z-8nt > div > div > div > div') || 
+                      document.querySelector('[class*="chatlist-module__chatlist_wrap__"]') || 
+                      document.querySelector('[class*="chatlist-module__chatlist__"]') || 
+                      document.querySelector('[class*="chatlist"]') || 
+                      document.querySelector('[class*="friendlist-module__list_wrap__"]') || 
+                      document.querySelector('[class*="friendlist-module__list__"]') || 
+                      document.querySelector('[class*="friendlist"]'),
+                right: document.querySelector('#root > div > div > div.chatroom-module__chatroom__eVUaK') || 
+                       document.querySelector('[class*="chatroom-module__chatroom__"]') || 
+                       document.querySelector('[class*="chatroom"]')
+            };
+
+            const activeEl = document.activeElement;
+
+            // 現在アクティブな要素がどのエリアに属しているかを判定
+            let currentAreaIndex = -1; // -1: 不明, 0: GNB, 1: Left, 2: Right
+            if (activeEl) {
+                if (areas.gnb && (areas.gnb === activeEl || areas.gnb.contains(activeEl))) {
+                    currentAreaIndex = 0;
+                } else if (areas.left && (areas.left === activeEl || areas.left.contains(activeEl))) {
+                    currentAreaIndex = 1;
+                } else if (areas.right && (areas.right === activeEl || areas.right.contains(activeEl))) {
+                    currentAreaIndex = 2;
+                }
+            }
+
+            // 次のエリアの決定 (F6: 正順, Shift+F6: 逆順)
+            const direction = e.shiftKey ? -1 : 1;
+            let nextAreaIndex;
+            if (currentAreaIndex === -1) {
+                nextAreaIndex = e.shiftKey ? 2 : 0;
+            } else {
+                nextAreaIndex = (currentAreaIndex + direction + 3) % 3;
+            }
+
+            // 移動先のエリアに応じた処理
+            let targetArea = null;
+            let announceMsg = "";
+            let focusTarget = null;
+
+            if (nextAreaIndex === 0) {
+                targetArea = areas.gnb;
+                announceMsg = "グローバルバー";
+                if (targetArea) {
+                    focusTarget = targetArea.querySelector('button, a, [tabindex="0"]');
+                }
+            } else if (nextAreaIndex === 1) {
+                targetArea = areas.left;
+                announceMsg = "左側リスト";
+                if (targetArea) {
+                    focusTarget = targetArea.querySelector('[class*="folderTab-module__tab_item__"].active, [class*="folderTab-module__tab_item__"], [class*="chatlistItem-module__chatlist_item__"], [class*="friendlistItem-module__item__"], button, [tabindex="0"]');
+                }
+            } else if (nextAreaIndex === 2) {
+                targetArea = areas.right;
+                announceMsg = "右側トークルーム";
+                if (targetArea) {
+                    focusTarget = targetArea.querySelector('[class*="chatroomEditor-module__textarea__"], textarea, .message_list, [class*="message_list"]');
+                }
+            }
+
+            // ターゲットが見つかった場合のフォーカス処理
+            if (!focusTarget && targetArea) {
+                focusTarget = targetArea;
+            }
+
+            if (focusTarget) {
+                if (!focusTarget.hasAttribute('tabindex')) {
+                    focusTarget.setAttribute('tabindex', '-1');
+                }
+                focusTarget.focus();
+                announce(announceMsg + "にフォーカスしました");
+                console.log(`F6 navigation: focused ${announceMsg}.`, focusTarget);
+            } else {
+                announce(announceMsg + "が見つかりませんでした");
+                console.log(`F6 navigation: target area ${announceMsg} not found.`);
+            }
+        }
+    }, true);
+
+    // チャットリスト/友だちリスト内での上下矢印キーでの移動とEnterキーでの決定処理 (NVDAフォーカスモード用)
+    window.addEventListener('keydown', function(e) {
+        const activeEl = document.activeElement;
+        if (!activeEl) return;
+
+        const chatItem = activeEl.closest('[class*="chatlistItem-module__chatlist_item__"]');
+        const friendItem = activeEl.closest('[class*="friendlistItem-module__item__"]');
+        const currentItem = chatItem || friendItem;
+
+        if (!currentItem) return;
+
+        // 左側リストのコンテナを取得
+        const leftContainer = currentItem.closest('[class*="chatlist-module__chatlist__"]') || 
+                              currentItem.closest('[class*="friendlist-module__list__"]') ||
+                              document.querySelector('#root > div > div > div.chatlist-module__chatlist_wrap__KtTpq > div.chatlist-module__chatlist__qruAE > div > div > div > div') ||
+                              document.querySelector('#root > div > div > div.friendlist-module__list_wrap__IeJXY > div.friendlist-module__list__Z-8nt > div > div > div > div');
+
+        if (!leftContainer) return;
+
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            e.preventDefault();
+
+            // リスト内のすべての項目を取得
+            const items = Array.from(leftContainer.querySelectorAll('[class*="chatlistItem-module__chatlist_item__"], [class*="friendlistItem-module__item__"]'));
+            const index = items.indexOf(currentItem);
+            if (index === -1) return;
+
+            const direction = e.key === 'ArrowUp' ? -1 : 1;
+            const targetIndex = index + direction;
+
+            if (targetIndex >= 0 && targetIndex < items.length) {
+                const nextItem = items[targetIndex];
+                
+                // トークルーム項目内のメインボタンから詳細な aria-label（名前、未読、最新メッセージ、時間など）を取得
+                const mainBtn = nextItem.querySelector('button[class*="button_chatlist_item"], button[class*="button_friend"], button');
+                const detailLabel = (mainBtn ? mainBtn.getAttribute('aria-label') : null) || nextItem.getAttribute('aria-label') || nextItem.textContent || "不明な項目";
+
+                // 親アイテム自体をフォーカス可能にし、余計なコントロール名（ボタン等）を読ませない設定にする
+                nextItem.setAttribute('tabindex', '-1');
+                nextItem.setAttribute('aria-label', detailLabel);
+                nextItem.setAttribute('role', 'text'); // ボタンなどのコントロールタイプとしての読み上げを抑制
+                
+                nextItem.focus();
+                
+                // スクリーンリーダーに詳細情報を即時かつ強制的に読み上げさせる
+                announce(detailLabel, true);
+            }
+        }
+
+        if (e.key === 'Enter' || e.key === ' ') {
+            let clickBtn = currentItem.querySelector('button[class*="button_chatlist_item"], button[class*="button_friend"]');
+            if (!clickBtn) {
+                const buttons = Array.from(currentItem.querySelectorAll('button, a, [tabindex="0"]'));
+                clickBtn = buttons.find(btn => {
+                    const isInsideProfile = btn.closest('[class*="profileImage-module__"]') || 
+                                            btn.closest('[class*="thumbnail"]') || 
+                                            btn.closest('[class*="avatar"]');
+                    return !isInsideProfile;
+                });
+            }
+
+            if (clickBtn && clickBtn !== activeEl) {
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                e.preventDefault();
+                simulateClick(clickBtn);
+            } else {
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                e.preventDefault();
+                simulateClick(activeEl);
+            }
+        }
+    }, true);
+
+    // トークルーム内でEscが押された際、公式のクローズ処理後に左側リスト（トークルーム一覧）にフォーカスを戻す処理
+    window.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            const activeEl = document.activeElement;
+            if (!activeEl) return;
+
+            const rightArea = document.querySelector('#root > div > div > div.chatroom-module__chatroom__eVUaK') || 
+                               document.querySelector('[class*="chatroom-module__chatroom__"]') || 
+                               document.querySelector('[class*="chatroom"]');
+
+            if (rightArea && (rightArea === activeEl || rightArea.contains(activeEl))) {
+                // 公式のEscキー処理が走るのを待つため、少し遅延を入れてフォーカスを移動する
+                setTimeout(() => {
+                    const leftArea = document.querySelector('#root > div > div > div.chatlist-module__chatlist_wrap__KtTpq > div.chatlist-module__chatlist__qruAE > div > div > div > div') || 
+                                     document.querySelector('#root > div > div > div.friendlist-module__list_wrap__IeJXY > div.friendlist-module__list__Z-8nt > div > div > div > div') || 
+                                     document.querySelector('[class*="chatlist-module__chatlist_wrap__"]') || 
+                                     document.querySelector('[class*="chatlist-module__chatlist__"]') || 
+                                     document.querySelector('[class*="chatlist"]') || 
+                                     document.querySelector('[class*="friendlist-module__list_wrap__"]') || 
+                                     document.querySelector('[class*="friendlist-module__list__"]') || 
+                                     document.querySelector('[class*="friendlist"]');
+
+                    if (leftArea) {
+                        const focusTarget = leftArea.querySelector('[class*="folderTab-module__tab_item__"].active, [class*="folderTab-module__tab_item__"], [class*="chatlistItem-module__chatlist_item__"], [class*="friendlistItem-module__item__"], button, [tabindex="0"]') || leftArea;
+                        
+                        if (focusTarget) {
+                            if (!focusTarget.hasAttribute('tabindex')) {
+                                focusTarget.setAttribute('tabindex', '-1');
+                            }
+                            focusTarget.focus();
+                            announce("トークルームを閉じ、左側リストにフォーカスしました");
+                            console.log("Escape key: focused left sidebar.");
+                        }
+                    }
+                }, 120);
+            }
+        }
+    }, true);
+
     // Global Event Listeners to block LINE official shortcuts when focusing on messages
     window.addEventListener('keydown', function(e) {
         const activeEl = document.activeElement;
@@ -819,6 +1026,20 @@
 
         // 2. Chat list items - Hash-independent
         try {
+            const leftContainer = document.querySelector('#root > div > div > div.chatlist-module__chatlist_wrap__KtTpq > div.chatlist-module__chatlist__qruAE > div > div > div > div') || 
+                                  document.querySelector('#root > div > div > div.friendlist-module__list_wrap__IeJXY > div.friendlist-module__list__Z-8nt > div > div > div > div') || 
+                                  document.querySelector('[class*="chatlist-module__chatlist_wrap__"]') || 
+                                  document.querySelector('[class*="chatlist-module__chatlist__"]') || 
+                                  document.querySelector('[class*="chatlist"]') || 
+                                  document.querySelector('[class*="friendlist-module__list_wrap__"]') || 
+                                  document.querySelector('[class*="friendlist-module__list__"]') || 
+                                  document.querySelector('[class*="friendlist"]');
+            if (leftContainer) {
+                leftContainer.setAttribute('aria-label', '左側リスト');
+                // ユーザーの要望により、NVDAがフォーカスモードに入るよう role="application" を設定
+                leftContainer.setAttribute('role', 'application');
+            }
+
             const chatItems = document.querySelectorAll('[class*="chatlistItem-module__chatlist_item__"]');
             chatItems.forEach(item => {
                 const titleEl = item.querySelector('[class*="chatlistItem-module__title_box__"]');
@@ -905,6 +1126,16 @@
 
         // 6. GNB (Global Navigation Bar) icons/tabs on the left (e.g. Chats, Friends) - Hash-independent
         try {
+            const gnbContainer = document.querySelector('#root > div > div > div.gnb-module__gnb__01tnB') || 
+                                 document.querySelector('[class*="gnb-module__gnb__"]') || 
+                                 document.querySelector('[class*="gnb"]');
+            if (gnbContainer) {
+                gnbContainer.setAttribute('aria-label', 'グローバルバー');
+                if (!gnbContainer.getAttribute('role')) {
+                    gnbContainer.setAttribute('role', 'navigation');
+                }
+            }
+
             const rawGnbItems = Array.from(document.querySelectorAll(
                 '[class*="gnb"] button, [class*="gnb"] a, [class*="gnb"] li, [class*="gnb"] [class*="button"], [class*="gnb-module__nav_list_item"]'
             ));
@@ -956,13 +1187,23 @@
             });
         } catch (e) { console.error("Patch Error (GNB):", e); }
 
-        // 7. Talkroom title header (H1) - Hash-independent
+        // 7. Talkroom title header (H1) and chatroom container - Hash-independent
         try {
             const chatHeader = document.querySelector('[class*="chatroomHeader-module__name__"]');
             if (chatHeader && chatHeader.getAttribute('role') !== 'heading') {
                 chatHeader.setAttribute('role', 'heading');
                 chatHeader.setAttribute('aria-level', '1');
                 console.log("Applied H1 heading to chatroom title: " + chatHeader.textContent);
+            }
+
+            const rightContainer = document.querySelector('#root > div > div > div.chatroom-module__chatroom__eVUaK') || 
+                                   document.querySelector('[class*="chatroom-module__chatroom__"]') || 
+                                   document.querySelector('[class*="chatroom"]');
+            if (rightContainer) {
+                rightContainer.setAttribute('aria-label', '右側トークルーム');
+                if (!rightContainer.getAttribute('role')) {
+                    rightContainer.setAttribute('role', 'region');
+                }
             }
         } catch (e) { console.error("Patch Error (ChatroomHeader):", e); }
 
