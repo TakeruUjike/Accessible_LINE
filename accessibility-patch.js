@@ -335,44 +335,26 @@
             if (targetIndex >= 0 && targetIndex < items.length) {
                 const nextItem = items[targetIndex];
                 
-                // トークルーム項目内のメインボタンから詳細な aria-label（名前、未読、最新メッセージ、時間など）を取得
-                const mainBtn = nextItem.querySelector('button[class*="button_chatlist_item"], button[class*="button_friend"], button');
-                const detailLabel = (mainBtn ? mainBtn.getAttribute('aria-label') : null) || nextItem.getAttribute('aria-label') || nextItem.textContent || "不明な項目";
-
                 // 親アイテム自体をフォーカス可能にし、余計なコントロール名（ボタン等）を読ませない設定にする
-                nextItem.setAttribute('tabindex', '-1');
-                nextItem.setAttribute('aria-label', detailLabel);
-                nextItem.setAttribute('role', 'text'); // ボタンなどのコントロールタイプとしての読み上げを抑制
+                // (aria-labelledbyを通じて、中の公式ボタンのリアルタイムなラベルが自動で読み上げられる)
+                safeSetAttribute(nextItem, 'tabindex', '-1');
+                safeSetAttribute(nextItem, 'role', 'text');
                 
                 nextItem.focus();
-                
-                // スクリーンリーダーに詳細情報を即時かつ強制的に読み上げさせる
-                announce(detailLabel, true);
             }
         }
 
+        // 各アイテムに直接紐付けた keydown イベントハンドラが Enter/Space での simulateClick を行うが、
+        // activeEl が currentItem 自身の場合のフォールバックとしてここでも処理する
         if (e.key === 'Enter' || e.key === ' ') {
-            let clickBtn = currentItem.querySelector('button[class*="button_chatlist_item"], button[class*="button_friend"]');
-            if (!clickBtn) {
-                const buttons = Array.from(currentItem.querySelectorAll('button, a, [tabindex="0"]'));
-                clickBtn = buttons.find(btn => {
-                    const isInsideProfile = btn.closest('[class*="profileImage-module__"]') || 
-                                            btn.closest('[class*="thumbnail"]') || 
-                                            btn.closest('[class*="avatar"]');
-                    return !isInsideProfile;
-                });
-            }
-
-            if (clickBtn && clickBtn !== activeEl) {
-                e.stopPropagation();
-                e.stopImmediatePropagation();
-                e.preventDefault();
-                simulateClick(clickBtn);
-            } else {
-                e.stopPropagation();
-                e.stopImmediatePropagation();
-                e.preventDefault();
-                simulateClick(activeEl);
+            if (activeEl === currentItem) {
+                let clickBtn = currentItem.querySelector('button[class*="button_chatlist_item"], button[class*="button_friend"]');
+                if (clickBtn) {
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    e.preventDefault();
+                    simulateClick(clickBtn);
+                }
             }
         }
     }, true);
@@ -784,22 +766,36 @@
     }
 
     // Helper to add accessibility to non-interactive elements that should be interactive
+    function safeSetAttribute(el, attr, value) {
+        if (!el) return;
+        if (el.getAttribute(attr) !== value) {
+            el.setAttribute(attr, value);
+        }
+    }
+
+    function safeRemoveAttribute(el, attr) {
+        if (!el) return;
+        if (el.hasAttribute(attr)) {
+            el.removeAttribute(attr);
+        }
+    }
+
     function makeInteractive(el, role = 'button', label = null) {
         if (!el) return;
         try {
             // Add tabindex if not present
             if (!el.hasAttribute('tabindex')) {
-                el.setAttribute('tabindex', '0');
+                safeSetAttribute(el, 'tabindex', '0');
             }
             
             // Add role if not present
             if (!el.hasAttribute('role')) {
-                el.setAttribute('role', role);
+                safeSetAttribute(el, 'role', role);
             }
 
             // Add aria-label (always overwrite to replace poor defaults like "go chat room")
             if (label) {
-                el.setAttribute('aria-label', label);
+                safeSetAttribute(el, 'aria-label', label);
             }
 
             // Handle Enter and Space key presses
@@ -1035,32 +1031,53 @@
                                   document.querySelector('[class*="friendlist-module__list__"]') || 
                                   document.querySelector('[class*="friendlist"]');
             if (leftContainer) {
-                leftContainer.setAttribute('aria-label', '左側リスト');
+                safeSetAttribute(leftContainer, 'aria-label', '左側リスト');
                 // ユーザーの要望により、NVDAがフォーカスモードに入るよう role="application" を設定
-                leftContainer.setAttribute('role', 'application');
+                safeSetAttribute(leftContainer, 'role', 'application');
             }
 
             const chatItems = document.querySelectorAll('[class*="chatlistItem-module__chatlist_item__"]');
-            chatItems.forEach(item => {
-                const titleEl = item.querySelector('[class*="chatlistItem-module__title_box__"]');
-                const title = titleEl ? titleEl.textContent.trim() : 'トーク';
-                
-                const countEl = item.querySelector('[class*="chatlistItem-module__message_count__"]');
-                const unreadText = countEl ? `, 未読${countEl.textContent.trim()}件` : '';
-                
-                const descEl = item.querySelector('[class*="chatlistItem-module__description__"]');
-                const desc = descEl ? `, 最新メッセージ: ${descEl.textContent.trim()}` : '';
-
-                const timeEl = item.querySelector('[class*="chatlistItem-module__date__"]');
-                const time = timeEl ? `, ${timeEl.textContent.trim()}` : '';
-
-                const ariaLabel = `${title}${unreadText}${desc}${time}`;
-
+            chatItems.forEach((item, index) => {
                 const clickBtn = item.querySelector('button[class*="button_chatlist_item"]');
                 if (clickBtn) {
-                    makeInteractive(clickBtn, 'link', ariaLabel);
-                } else {
-                    makeInteractive(item, 'link', ariaLabel);
+                    const mid = item.getAttribute('data-mid') || `chat-${index}`;
+                    const btnId = `btn-${mid}`;
+                    
+                    // タイトル、未読件数、最新メッセージ、時間を再構築する
+                    const titleEl = item.querySelector('[class*="chatlistItem-module__title_box__"]');
+                    const title = titleEl ? titleEl.textContent.trim() : 'トーク';
+                    
+                    const countEl = item.querySelector('[class*="chatlistItem-module__message_count__"]');
+                    const unreadText = countEl ? `, 未読${countEl.textContent.trim()}件` : '';
+                    
+                    const descEl = item.querySelector('[data-message-id]') || item.querySelector('[class*="chatlistItem-module__description__"]');
+                    const desc = descEl ? `, 最新メッセージ: ${descEl.textContent.trim()}` : '';
+
+                    const timeEl = item.querySelector('[class*="chatlistItem-module__date__"]');
+                    const time = timeEl ? `, ${timeEl.textContent.trim()}` : '';
+
+                    const ariaLabel = `${title}${unreadText}${desc}${time}`;
+
+                    // 公式ボタンにIDと最新のaria-labelを設定
+                    safeSetAttribute(clickBtn, 'id', btnId);
+                    safeSetAttribute(clickBtn, 'aria-label', ariaLabel);
+
+                    // 親divからaria-labelledbyで紐付ける
+                    safeSetAttribute(item, 'aria-labelledby', btnId);
+                    safeSetAttribute(item, 'role', 'text');
+                    safeSetAttribute(item, 'tabindex', '-1');
+                    safeRemoveAttribute(item, 'aria-label'); // 古いラベルが残って競合するのを防ぐ
+
+                    // キー操作用の属性付与（Enter/Spaceクリックシミュレーション用）
+                    if (!item.dataset.keyboardHandlerAttached) {
+                        item.addEventListener('keydown', function(e) {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                simulateClick(clickBtn);
+                            }
+                        });
+                        item.dataset.keyboardHandlerAttached = 'true';
+                    }
                 }
             });
         } catch (e) { console.error("Patch Error (ChatList):", e); }
@@ -1068,20 +1085,39 @@
         // 3. Friend list items - Hash-independent
         try {
             const friendItems = document.querySelectorAll('[class*="friendlistItem-module__item__"]');
-            friendItems.forEach(item => {
-                const nameEl = item.querySelector('[class*="friendlistItem-module__name_box__"]');
-                const name = nameEl ? nameEl.textContent.trim() : '友だち';
-
-                const descEl = item.querySelector('[class*="friendlistItem-module__description__"]');
-                const desc = descEl ? `, ステータスメッセージ: ${descEl.textContent.trim()}` : '';
-
-                const ariaLabel = `${name}${desc}`;
-
+            friendItems.forEach((item, index) => {
                 const clickBtn = item.querySelector('button[role="link"], button[class*="button_friend"]');
                 if (clickBtn) {
-                    makeInteractive(clickBtn, 'button', ariaLabel);
-                } else {
-                    makeInteractive(item, 'button', ariaLabel);
+                    const mid = item.getAttribute('data-mid') || `friend-${index}`;
+                    const btnId = `btn-${mid}`;
+
+                    const nameEl = item.querySelector('[class*="friendlistItem-module__name_box__"]');
+                    const name = nameEl ? nameEl.textContent.trim() : '友だち';
+
+                    const descEl = item.querySelector('[class*="friendlistItem-module__description__"]');
+                    const desc = descEl ? `, ステータスメッセージ: ${descEl.textContent.trim()}` : '';
+
+                    const ariaLabel = `${name}${desc}`;
+
+                    // 公式ボタンにIDと最新のaria-labelを設定
+                    safeSetAttribute(clickBtn, 'id', btnId);
+                    safeSetAttribute(clickBtn, 'aria-label', ariaLabel);
+
+                    // 親divからaria-labelledbyで紐付ける
+                    safeSetAttribute(item, 'aria-labelledby', btnId);
+                    safeSetAttribute(item, 'role', 'text');
+                    safeSetAttribute(item, 'tabindex', '-1');
+                    safeRemoveAttribute(item, 'aria-label');
+
+                    if (!item.dataset.keyboardHandlerAttached) {
+                        item.addEventListener('keydown', function(e) {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                simulateClick(clickBtn);
+                            }
+                        });
+                        item.dataset.keyboardHandlerAttached = 'true';
+                    }
                 }
             });
         } catch (e) { console.error("Patch Error (FriendList):", e); }
@@ -1391,18 +1427,42 @@
                 let newMessages = [];
 
                 for (const mutation of mutations) {
-                    if (mutation.addedNodes.length > 0) {
-                        shouldPatch = true;
-                        mutation.addedNodes.forEach(node => {
-                            if (node.nodeType === Node.ELEMENT_NODE) {
-                                if (node.hasAttribute('data-message-id')) {
-                                    newMessages.push(node);
-                                } else {
-                                    const msgs = node.querySelectorAll('[data-message-id]');
-                                    msgs.forEach(m => newMessages.push(m));
+                    if (mutation.type === 'childList') {
+                        if (mutation.addedNodes.length > 0) {
+                            shouldPatch = true;
+                            mutation.addedNodes.forEach(node => {
+                                if (node.nodeType === Node.ELEMENT_NODE) {
+                                    if (node.hasAttribute('data-message-id')) {
+                                        newMessages.push(node);
+                                    } else {
+                                        const msgs = node.querySelectorAll('[data-message-id]');
+                                        msgs.forEach(m => newMessages.push(m));
+                                    }
                                 }
-                            }
-                        });
+                            });
+                        }
+                    } else if (mutation.type === 'characterData') {
+                        // announcer内の変更は無視する（無限ループ防止）
+                        const target = mutation.target;
+                        if (target.parentElement && (target.parentElement.id === 'sr-announcer' || target.parentElement.id === 'sr-announcer-assertive')) {
+                            // 無視
+                        } else {
+                            shouldPatch = true;
+                        }
+                    } else if (mutation.type === 'attributes') {
+                        // 属性の変更（data-message-idなどの更新）
+                        const attrName = mutation.attributeName;
+                        // 我々が自分で設定するアクセシビリティ用属性は無視して無限ループを防ぐ
+                        const ignoreAttrs = [
+                            'aria-label', 'role', 'tabindex', 'aria-selected', 
+                            'aria-activedescendant', 'aria-expanded', 'aria-controls', 
+                            'aria-haspopup', 'aria-autocomplete', 'id',
+                            'data-keyboard-handler-attached', 'data-focus-trap-attached',
+                            'data-shift-tab-handler-attached'
+                        ];
+                        if (!ignoreAttrs.includes(attrName)) {
+                            shouldPatch = true;
+                        }
                     }
                 }
 
@@ -1431,9 +1491,12 @@
             }
         });
 
+        // 監視対象を広げ、かつ属性フィルターで無限ループを未然に防ぐ
         observer.observe(document.body, {
             childList: true,
-            subtree: true
+            subtree: true,
+            characterData: true,
+            attributeFilter: ['data-message-id', 'class', 'style']
         });
     } catch (e) {
         console.error("Accessibility Patch: MutationObserver initialization failed", e);
